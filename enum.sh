@@ -2,7 +2,7 @@
 
 
 ################################################################################
-# Linux Privilege Escalation Enumeration
+# NULLASEND - Linux Privilege Escalation Enumeration Script
 # 
 # Purpose: Rapid, low-noise enumeration of core privilege escalation vectors
 # WARNING: For authorized security assessments only. Unauthorized use is illegal.
@@ -686,7 +686,7 @@ main() {
     
     echo ""
     echo "┌────────────────────────────────────────────────────────────────┐"
-    echo "│          Linux Privilege Escalation Enumeration                │"
+    echo "│                          NULLASCEND                            │"
     echo "└────────────────────────────────────────────────────────────────┘"
     echo ""
     echo "                              by:"

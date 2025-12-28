@@ -2,14 +2,7 @@
 
 <img src="assets/nullascendIcon.png" alt="NULLASCEND Logo" width="200"/>
 
-<pre style="font-size: 8px;">                                      
-            ▄▄ ▄▄                                  ▄▄ 
-            ██ ██                                  ██ 
-████▄ ██ ██ ██ ██  ▀▀█▄ ▄█▀▀▀ ▄████ ▄█▀█▄ ████▄ ▄████ 
-██ ██ ██ ██ ██ ██ ▄█▀██ ▀███▄ ██    ██▄█▀ ██ ██ ██ ██ 
-██ ██ ▀██▀█ ██ ██ ▀█▄██ ▄▄▄█▀ ▀████ ▀█▄▄▄ ██ ██ ▀████ 
-                                     
-</pre>
+## NullAscend
 
 </div>
 
